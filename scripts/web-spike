@@ -9,6 +9,9 @@ mkdir -p "$ROOT"/{home,state,config}
 cp -Rn "$(dirname "$0")/../spike/home/." "$ROOT/home/" 2>/dev/null || true
 export HERDR_APP_HOME="$ROOT/home" HC_SESSION=hweb XDG_STATE_HOME="$ROOT/state" XDG_CONFIG_HOME="$ROOT/config" HERDR_APP_NO_SOUND=1
 unset HC_SOCKET HC_TERMINAL_ID HC_TERMINAL_SOCKET HC_SCOPE
+# Launched from an agent's shell, its session would leak into every spike
+# terminal: an agent started there runs as that one's muted child.
+for v in $(compgen -e | grep -E '^(CLAUDE|ANTHROPIC_BASE_URL$)'); do unset "$v"; done
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 BIN="$REPO/target/debug/herdr-app"
 if [ $# -gt 0 ]; then exec "$BIN" "$@"; fi
