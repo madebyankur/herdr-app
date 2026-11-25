@@ -3641,6 +3641,11 @@ impl AppWindow {
                     return self.fail(e);
                 }
             }
+            n if crate::web::AGENT_COMMANDS.contains(&n) => {
+                // From a key or a mod: nobody reads the page's answer.
+                let (tx, _) = std::sync::mpsc::channel();
+                self.web.borrow().agent(n, &a, tx);
+            }
             "web.focus" => {
                 let r = self.web.borrow().focus(Self::arg(a, "id"));
                 if let Err(e) = r {
@@ -4206,6 +4211,12 @@ impl AppWindow {
             Request::SetBadge(text) => crate::badge::set(text.as_deref()),
             Request::Refresh => self.refresh_mods(cx),
             Request::Control { cmd, reply } => {
+                // A page answers these later: the reply goes with the command.
+                if let Some(name) = cmd.get("do").and_then(Value::as_str).filter(|n| crate::web::AGENT_COMMANDS.contains(n)) {
+                    let args = cmd.get("args").cloned().unwrap_or_else(|| json!({}));
+                    self.web.borrow().agent(name, &args, reply);
+                    return;
+                }
                 let _ = reply.send(self.control(cmd, window, cx));
             }
         }

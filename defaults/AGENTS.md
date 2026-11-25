@@ -682,6 +682,12 @@ The main ones:
   (`id`: the block; default the last one shown). Shared `"web"` holds each block's
   `{url, title, loading, focused}` for a toolbar mod. While a page has the keyboard,
   keys bound in `global` or the shown `layout:` section still go to Herdr.
+  Agents drive pages with `herdr-app do`, and the page answers: `web.read {mode?, id?}`
+  (text, or `"tree"`: links, buttons, fields and headings, each with a `ref`),
+  `web.click {ref | selector}`, `web.type {text, ref | selector, submit?, clear?}`,
+  `web.key {key}`, `web.scroll {by? | to? | ref | selector}`, `web.screenshot {path?}`
+  (prints the PNG's path). Every page is open to them, signed-in sites included;
+  the events they send are synthetic, so a site may ignore some.
 - Layout: `layout.switch {name?}`, `layout.toggle {id}`, `layout.show {id}`, `layout.hide {id}`,
   `layout.resize {id, px | weight}`, `layout.select {stack, child}`, `layout.set {layout}`
   (personal tree edits; on shipped layouts only click/look fields change),

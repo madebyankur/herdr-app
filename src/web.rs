@@ -79,6 +79,9 @@ fn publish(id: &str, key: &str, value: Value) {
 }
 
 const GRAB_SCRIPT: &str = include_str!("web_grab.js");
+const AGENT_SCRIPT: &str = include_str!("web_agent.js");
+/// Commands that answer later, from the page (`Web::agent`).
+pub const AGENT_COMMANDS: &[&str] = &["web.read", "web.click", "web.type", "web.key", "web.scroll", "web.screenshot"];
 const GRAB_STOP: &str = "window.__herdrGrab && window.__herdrGrab.stop()";
 
 /// What `web.navigate` loads for typed text: an http(s) address, normalised
@@ -360,6 +363,59 @@ impl Web {
             _ => return Err(format!("unknown web command {name}")),
         };
         r.map_err(|e| e.to_string())
+    }
+
+    /// What agents run (`web.read`, `web.click`, `web.type`, `web.key`,
+    /// `web.scroll`, `web.screenshot`): the page answers later, so the reply
+    /// goes to `reply` when it does. Every page is open to them.
+    pub fn agent(&self, name: &str, args: &Value, reply: std::sync::mpsc::Sender<Value>) {
+        let fail = |reply: &std::sync::mpsc::Sender<Value>, e: String| {
+            let _ = reply.send(json!({ "error": e }));
+        };
+        let id = args.get("id").and_then(Value::as_str);
+        let v = match self.view(id) {
+            Ok(v) => v,
+            Err(e) => return fail(&reply, e),
+        };
+        let id = id.map(str::to_owned).or_else(|| self.last.clone()).unwrap_or_default();
+        if name == "web.screenshot" {
+            let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
+            let path = match args.get("path").and_then(Value::as_str) {
+                Some(p) if std::path::Path::new(p).is_absolute() => std::path::PathBuf::from(p),
+                Some(p) => return fail(&reply, format!("path must be absolute, not {p}")),
+                None => crate::mods::app_dir().join("data/web-shots").join(format!("{id}-{at}.png")),
+            };
+            let page = crate::mods::shared("web").and_then(|w| w.get(&id).cloned()).unwrap_or_default();
+            // The whole visible page: snapshot keeps the rect inside the view.
+            container::snapshot(&id, [0.0, 0.0, 1.0e7, 1.0e7], path, move |saved| {
+                let _ = reply.send(match saved {
+                    Some(p) => json!({ "path": p.to_string_lossy(), "url": page.get("url"), "title": page.get("title") }),
+                    None => json!({ "error": "the page couldn't be captured" }),
+                });
+            });
+            return;
+        }
+        let op = name.trim_start_matches("web.");
+        let mut a = args.clone();
+        if let Some(m) = a.as_object_mut() {
+            m.remove("id");
+        }
+        let a = if a.is_object() { a } else { json!({}) };
+        let script = format!("({AGENT_SCRIPT})({}, {})", json!(op), a);
+        // wry wants a callback it can call more than once; it calls it once.
+        let reply = std::sync::Mutex::new(Some(reply));
+        let sent = v.evaluate_script_with_callback(&script, move |result| {
+            let Some(reply) = reply.lock().ok().and_then(|mut r| r.take()) else { return };
+            // The helper returns a JSON string, which wry encodes as JSON again.
+            let answer = serde_json::from_str::<String>(&result)
+                .ok()
+                .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+                .unwrap_or_else(|| json!({ "error": "the page didn't answer: it may still be loading, or blocks scripts" }));
+            let _ = reply.send(answer);
+        });
+        if let Err(e) = sent {
+            tracing::warn!("web agent script: {e}");
+        }
     }
 
     /// Gives the page the keyboard (a click on it does this too, natively).
