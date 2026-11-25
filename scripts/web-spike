@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# SPIKE: run this build in an isolated home and core (never your real Herdr).
+#   scripts/web-spike            start the window
+#   scripts/web-spike do ...     talk to it (herdr-app subcommands)
+set -euo pipefail
+ROOT=/var/tmp/herdr-web
+mkdir -p "$ROOT"/{home,state,config}
+# The toolbar mod and the web layout ship in spike/home; existing files are kept.
+cp -Rn "$(dirname "$0")/../spike/home/." "$ROOT/home/" 2>/dev/null || true
+export HERDR_APP_HOME="$ROOT/home" HC_SESSION=hweb XDG_STATE_HOME="$ROOT/state" XDG_CONFIG_HOME="$ROOT/config" HERDR_APP_NO_SOUND=1
+unset HC_SOCKET HC_TERMINAL_ID HC_TERMINAL_SOCKET HC_SCOPE
+exec "$(dirname "$0")/../target/debug/herdr-app" "$@"

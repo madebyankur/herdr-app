@@ -1,0 +1,3 @@
+# SPIKE: incremental caches grew to 10 GB and filled the disk.
+[build]
+incremental = false
