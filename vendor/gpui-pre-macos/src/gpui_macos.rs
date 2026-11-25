@@ -35,6 +35,15 @@ mod platform;
 mod window;
 mod window_appearance;
 
+/// HERDR: the keystroke GPUI would see for a native key event, so the app can
+/// decide whether a key pressed in a native child view (a web view) is its own.
+///
+/// # Safety
+/// `native_event` must be a live `NSEvent` of type key down or key up.
+pub unsafe fn keystroke_for_event(native_event: *mut std::ffi::c_void) -> gpui::Keystroke {
+    unsafe { events::parse_keystroke(native_event as id) }
+}
+
 use cocoa::{
     base::{id, nil},
     foundation::{NSAutoreleasePool, NSNotFound, NSString, NSUInteger},

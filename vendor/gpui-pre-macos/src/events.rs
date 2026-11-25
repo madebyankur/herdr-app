@@ -395,7 +395,8 @@ pub(crate) unsafe fn platform_input_from_native(
     }
 }
 
-unsafe fn parse_keystroke(native_event: id) -> Keystroke {
+// HERDR: pub(crate) for keystroke_for_event.
+pub(crate) unsafe fn parse_keystroke(native_event: id) -> Keystroke {
     unsafe {
         use cocoa::appkit::*;
 
