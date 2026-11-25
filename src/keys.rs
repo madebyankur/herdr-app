@@ -108,6 +108,21 @@ pub fn listing() -> Vec<(String, String, String)> {
     out
 }
 
+/// SPIKE: whether a keystroke (as GPUI writes it, `cmd-shift-t`) is Herdr's
+/// own while the shown layout is `layout`: bound in `global` or `layout:<layout>`,
+/// to anything but `terminal`. Keys pressed in a web page use this to come back.
+pub fn herdr_owns(stroke: &str, layout: &str) -> bool {
+    let norm = |k: &str| gpui::Keystroke::parse(k).map(|k| k.unparse()).ok();
+    let Some(stroke) = norm(stroke) else { return false };
+    let here = format!("layout:{layout}");
+    listing().into_iter().any(|(section, keys, action)| {
+        (section == "global" || section == here)
+            && action != "terminal"
+            && !keys.contains(' ')
+            && norm(&keys).as_deref() == Some(stroke.as_str())
+    })
+}
+
 pub fn path() -> std::path::PathBuf {
     crate::mods::app_dir().join("keys.json")
 }
@@ -277,6 +292,29 @@ pub fn install(bindings: Vec<KeyBinding>, cx: &mut App) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn web_page_hands_back_only_herdr_keys() {
+        let dir = std::env::temp_dir().join(format!("herdr-owns-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("keys.json"), r#"{
+            "global": { "cmd-t": "tab.new", "cmd-w": "tab.close", "cmd-shift-]": "tab.next", "ctrl-1": "terminal" },
+            "terminal": { "cmd-c": "terminal.copy", "cmd-v": "terminal.paste", "cmd-f": "terminal.search" },
+            "layout:web": { "cmd-l": "app.help" },
+            "layout:other": { "cmd-k": "app.palette" }
+        }"#).unwrap();
+        // SAFETY: this test alone reads HERDR_APP_HOME (by name filter), before any thread uses it.
+        unsafe { std::env::set_var("HERDR_APP_HOME", &dir) };
+        let owns = |k| super::herdr_owns(k, "web");
+        assert!(owns("cmd-t") && owns("cmd-w"), "global keys come back");
+        assert!(owns("cmd-shift-]"), "shifted punctuation, as keys.json writes it");
+        assert!(owns(super::ESCAPE_HATCH), "the escape hatch always comes back");
+        assert!(owns("cmd-l"), "the shown layout's keys come back");
+        assert!(!owns("cmd-k"), "another layout's keys stay with the page");
+        assert!(!owns("cmd-c") && !owns("cmd-v") && !owns("cmd-f"), "copy, paste, find stay with the page");
+        assert!(!owns("ctrl-1"), "a key given to the program stays with the page");
+        assert!(!owns("a") && !owns("shift-a") && !owns("enter"), "typing stays with the page");
+    }
+
     #[test]
     fn only_byte_identical_shipped_keys_are_upgraded() {
         let dir = std::env::temp_dir().join(format!("herdr-keys-migration-{}", std::process::id()));
