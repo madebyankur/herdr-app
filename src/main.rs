@@ -38,6 +38,7 @@ mod terminal;
 mod update;
 mod update_notes;
 mod vt;
+mod web;
 mod win32_keys;
 mod window;
 

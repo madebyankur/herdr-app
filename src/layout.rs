@@ -28,6 +28,8 @@ pub enum Content {
     },
     /// An agent's terminal, full size (`"focused"`: the selected agent).
     Agent { agent: String },
+    /// SPIKE: a native web view showing this url (`web.rs`).
+    Web { web: String },
 }
 
 /// Which side of its node a floating block sits on. Left/right make it

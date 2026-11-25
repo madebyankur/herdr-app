@@ -675,6 +675,13 @@ The main ones:
   Terminals display Kitty graphics, including Unicode placeholder images used by
   programs such as yazi; partial images and scrolling follow the placeholder cells.
 - Agents: `agent.next`, `agent.prev`, `agent.focus {terminal}`.
+- Web (spike, macOS): a block with `{ "web": "<url>" }` shows a native web page
+  there. `web.navigate {url, id?}`, `web.back {id?}`, `web.forward {id?}`,
+  `web.reload {id?}`, `web.stop {id?}`, `web.devtools {id?}`, `web.focus {id?}`,
+  `web.design {id?}` (pick an element; its context lands in shared `"web"[id].grab`)
+  (`id`: the block; default the last one shown). Shared `"web"` holds each block's
+  `{url, title, loading, focused}` for a toolbar mod. While a page has the keyboard,
+  keys bound in `global` or the shown `layout:` section still go to Herdr.
 - Layout: `layout.switch {name?}`, `layout.toggle {id}`, `layout.show {id}`, `layout.hide {id}`,
   `layout.resize {id, px | weight}`, `layout.select {stack, child}`, `layout.set {layout}`
   (personal tree edits; on shipped layouts only click/look fields change),

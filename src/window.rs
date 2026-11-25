@@ -435,6 +435,8 @@ pub struct AppWindow {
     /// View placements and link enrollments already offered to a layout.
     seen: BTreeSet<String>,
     bounds: Rc<RefCell<HashMap<String, Bounds<Pixels>>>>,
+    /// SPIKE: native web views over `{ "web": url }` blocks.
+    web: Rc<RefCell<crate::web::Web>>,
     hidden_fit: pane_size::HiddenFit,
     drag: Option<Drag>,
     written_layout: String,
@@ -562,6 +564,7 @@ impl AppWindow {
             link_tasks: HashMap::new(),
             seen,
             bounds: Default::default(),
+            web: Default::default(),
             hidden_fit: Default::default(),
             drag: None,
             written_layout: String::new(),
@@ -3632,6 +3635,18 @@ impl AppWindow {
                 }
                 Err(e) => return self.fail(format!("layout: {e}")),
             },
+            "web.navigate" | "web.back" | "web.forward" | "web.reload" | "web.devtools" | "web.stop" | "web.design" => {
+                let r = self.web.borrow().command(name, Self::arg(a, "id"), Self::arg(a, "url"));
+                if let Err(e) = r {
+                    return self.fail(e);
+                }
+            }
+            "web.focus" => {
+                let r = self.web.borrow().focus(Self::arg(a, "id"));
+                if let Err(e) = r {
+                    return self.fail(e);
+                }
+            }
             "layout.toggle" | "layout.show" | "layout.hide" => {
                 let id = Self::arg(a, "id").unwrap_or_default();
                 let Some(n) = self.chrome.find_mut(id) else { return self.fail(format!("no node {id:?} in the shown layout")) };
@@ -4693,6 +4708,13 @@ impl AppWindow {
                 None => div().into_any_element(),
             },
             Content::Mod { .. } => self.render_slot(&n.id, cx),
+            Content::Web { web: url } => {
+                // The page is a native view over this spot: paint only says where.
+                let (web, id, url) = (self.web.clone(), n.id.clone(), url.clone());
+                canvas(|_, _, _| (), move |b, _, window, _| web.borrow_mut().place(&id, &url, b, window))
+                    .size_full()
+                    .into_any_element()
+            }
             Content::Agent { .. } => match self.shown_agent() {
                 Some(addr) => match self.agent_view(&n.id, &addr) {
                     Some(t) => div().size_full().child(shown_terminal(&t.view, cx)).into_any_element(),
@@ -4888,6 +4910,16 @@ impl AppWindow {
         }
     }
 
+    /// SPIKE: painted last, once every web block has said where it is. A dialog
+    /// hides every page; other overlays hide only the pages they overlap.
+    fn web_frame_end(&self) -> AnyElement {
+        let covered = self.overlays.iter().any(|o| o.kind == OverlayKind::Dialog);
+        let web = self.web.clone();
+        deferred(canvas(|_, _, _| (), move |_, _, _, _| web.borrow_mut().end_frame(covered)).size_0())
+            .with_priority(1_000)
+            .into_any_element()
+    }
+
     fn render_overlays(&self, viewport: Size<Pixels>, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let mut windows = Vec::new();
         let mut overlays = Vec::new();
@@ -4936,7 +4968,12 @@ impl AppWindow {
                     cx.stop_propagation();
                 })))
                 .when(o.kind != OverlayKind::Window, |d| d.on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation()))
-                .child(content);
+                .child(content)
+                // SPIKE: web views under this card hide (they'd be drawn over it).
+                .child({
+                    let web = self.web.clone();
+                    canvas(move |b, _, _| web.borrow_mut().cover(b), |_, _, _, _| {}).absolute().size_full()
+                });
             match o.kind {
                 OverlayKind::Window => windows.push(self.render_window(o, body, viewport, cx)),
                 OverlayKind::Dialog => overlays.push(
@@ -5595,6 +5632,7 @@ impl Render for AppWindow {
             self.refresh_snapshot_mods(cx);
         }
         let focused = self.focused_path(window, cx);
+        self.web.borrow_mut().begin_frame(&self.layout_name);
         let tree = self.render_node(&self.chrome, &focused, None, cx);
         let tree = self.window_frame(tree, window, cx);
         let overlays = self.render_overlays(window.viewport_size(), cx);
@@ -5687,6 +5725,7 @@ impl Render for AppWindow {
             .children(win_tracker)
             .child(pane_drag)
             .child(crate::bench::frame_end())
+            .child(self.web_frame_end())
     }
 }
 
