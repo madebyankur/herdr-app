@@ -9,4 +9,26 @@ mkdir -p "$ROOT"/{home,state,config}
 cp -Rn "$(dirname "$0")/../spike/home/." "$ROOT/home/" 2>/dev/null || true
 export HERDR_APP_HOME="$ROOT/home" HC_SESSION=hweb XDG_STATE_HOME="$ROOT/state" XDG_CONFIG_HOME="$ROOT/config" HERDR_APP_NO_SOUND=1
 unset HC_SOCKET HC_TERMINAL_ID HC_TERMINAL_SOCKET HC_SCOPE
-exec "$(dirname "$0")/../target/debug/herdr-app" "$@"
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
+BIN="$REPO/target/debug/herdr-app"
+if [ $# -gt 0 ]; then exec "$BIN" "$@"; fi
+# The window runs from a small bundle so the Dock shows Herdr's icon, not
+# "exec". Its own name and id: the real Herdr's CLI link, settings and
+# permissions stay untouched. Relinked every launch to follow cargo builds.
+APP="$REPO/target/debug/Herdr Web.app"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+cp -f "$REPO/assets/icons/Herdr.icns" "$APP/Contents/Resources/Herdr.icns"
+cat > "$APP/Contents/Info.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>CFBundleIdentifier</key><string>dev.herdr.app.web-spike</string>
+  <key>CFBundleName</key><string>Herdr Web</string>
+  <key>CFBundleExecutable</key><string>herdr-app</string>
+  <key>CFBundleIconFile</key><string>Herdr</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>NSHighResolutionCapable</key><true/>
+</dict></plist>
+PLIST
+ln -f "$BIN" "$APP/Contents/MacOS/herdr-app"
+exec "$APP/Contents/MacOS/herdr-app"
