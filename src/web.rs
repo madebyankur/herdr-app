@@ -125,8 +125,14 @@ fn file_of(url: &str) -> Option<std::path::PathBuf> {
 }
 
 /// Remembers the folder a block's page may read, when `url` is a local file.
+/// A file right in the home folder (or above it) gets only itself: its page
+/// never reads the whole home.
 fn allow_folder(id: &str, url: &str) {
-    let folder = file_of(url).and_then(|f| f.parent()?.canonicalize().ok());
+    let home = std::env::var_os("HOME").and_then(|h| std::path::Path::new(&h).canonicalize().ok());
+    let folder = file_of(url).and_then(|f| f.canonicalize().ok()).and_then(|f| {
+        let dir = f.parent()?.to_path_buf();
+        Some(if dir.parent().is_none() || home.as_ref().is_some_and(|h| h.starts_with(&dir)) { f } else { dir })
+    });
     let mut roots = ROOTS.lock().unwrap();
     let roots = roots.get_or_insert_with(HashMap::new);
     match folder {
@@ -135,11 +141,20 @@ fn allow_folder(id: &str, url: &str) {
     };
 }
 
+/// Local pages load only their own folder's files: no network, so what they
+/// read stays on the machine.
+const LOCAL_CSP: &str = "default-src herdr-file: data: blob: 'unsafe-inline' 'unsafe-eval'";
+
 /// Answers a `herdr-file:` request from block `id`'s page.
-fn serve_local(id: &str, uri: &str) -> wry::http::Response<std::borrow::Cow<'static, [u8]>> {
+fn serve_local(id: &str, req: &wry::http::Request<Vec<u8>>) -> wry::http::Response<std::borrow::Cow<'static, [u8]>> {
     let status = |code: u16| wry::http::Response::builder().status(code).body(std::borrow::Cow::Borrowed(&[][..])).unwrap();
+    // A web page (an iframe in a local one) can't read local files.
+    if req.headers().get("origin").is_some_and(|o| !o.as_bytes().starts_with(b"herdr-file:")) {
+        return status(403);
+    }
+    let uri = req.uri().to_string();
     let root = ROOTS.lock().unwrap().as_ref().and_then(|r| r.get(id).cloned());
-    let Some(path) = file_of(uri).and_then(|p| p.canonicalize().ok()) else { return status(404) };
+    let Some(path) = file_of(&uri).and_then(|p| p.canonicalize().ok()) else { return status(404) };
     if !root.is_some_and(|r| path.starts_with(r)) {
         return status(403);
     }
@@ -161,7 +176,11 @@ fn serve_local(id: &str, uri: &str) -> wry::http::Response<std::borrow::Cow<'sta
         "txt" | "md" => "text/plain; charset=utf-8",
         _ => "application/octet-stream",
     };
-    wry::http::Response::builder().header("Content-Type", mime).body(std::borrow::Cow::Owned(bytes)).unwrap()
+    wry::http::Response::builder()
+        .header("Content-Type", mime)
+        .header("Content-Security-Policy", LOCAL_CSP)
+        .body(std::borrow::Cow::Owned(bytes))
+        .unwrap()
 }
 
 /// What a web block loads for typed text: an http(s) address, normalised
@@ -171,10 +190,9 @@ fn serve_local(id: &str, uri: &str) -> wry::http::Response<std::borrow::Cow<'sta
 /// that isn't a valid address: wry panics on a URL macOS can't parse.
 pub fn address(text: &str) -> Result<String, String> {
     let text = text.trim();
-    if text.starts_with(LOCAL) {
-        return Ok(text.to_owned());
-    }
-    let local = if let Some(rest) = text.strip_prefix("~/") {
+    let local = if text.starts_with(LOCAL) {
+        Some(file_of(text).ok_or_else(|| format!("not a file address: {text}"))?)
+    } else if let Some(rest) = text.strip_prefix("~/") {
         std::env::var_os("HOME").map(|h| std::path::Path::new(&h).join(rest))
     } else if text.starts_with('/') {
         Some(std::path::PathBuf::from(text))
@@ -385,11 +403,15 @@ impl Web {
             .with_focused(false)
             // Sign-ins persist in Herdr's own store, apart from Safari's.
             .with_data_store_identifier(STORE)
-            .with_custom_protocol("herdr-file".into(), |id, req| serve_local(id, &req.uri().to_string()))
+            .with_custom_protocol("herdr-file".into(), |id, req| serve_local(id, &req))
             // Navigations include iframes (ads, embeds): the address comes only
             // from main-frame page loads below.
             .with_navigation_handler(|_| true)
             .with_on_page_load_handler(move |ev, u| {
+                // Left its local file: the folder isn't the page's to read any more.
+                if !u.starts_with(LOCAL) {
+                    allow_folder(&load_id, &u);
+                }
                 publish(&load_id, "url", json!(u));
                 publish(
                     &load_id,
@@ -536,8 +558,12 @@ impl Web {
             Err(e) => return fail(&reply, e),
         };
         let id = id.map(str::to_owned).or_else(|| self.last.clone()).unwrap_or_default();
-        let url = crate::mods::shared("web").and_then(|w| w.get(&id)?.get("url")?.as_str().map(str::to_owned)).unwrap_or_default();
+        // The page as it is now, not as last reported: consent is for this site.
+        let url = v.url().unwrap_or_default();
         let key = (id.clone(), site_of(&id, &url));
+        if key.1 == "null" {
+            return fail(&reply, format!("agents can't use this page ({url})"));
+        }
         if !ALLOWED.with_borrow(|a| a.contains(&key)) {
             if !ASKING.with_borrow_mut(|a| a.insert(key.clone())) {
                 return fail(&reply, format!("waiting for the person to allow agents on {}", key.1));
@@ -577,7 +603,9 @@ impl Web {
             m.remove("id");
         }
         let a = if a.is_object() { a } else { json!({}) };
-        let script = format!("({AGENT_SCRIPT})({}, {})", json!(op), a);
+        // The page may navigate before the script runs: it checks it's still on the allowed site.
+        let still = if url.starts_with(LOCAL) { "location.protocol === \"herdr-file:\"".to_owned() } else { format!("location.origin === {}", json!(key.1)) };
+        let script = format!("({still}) ? ({AGENT_SCRIPT})({}, {}) : JSON.stringify({{ error: \"the page changed: web.read again\" }})", json!(op), a);
         // wry wants a callback it can call more than once; it calls it once.
         let reply = std::sync::Mutex::new(Some(reply));
         let sent = v.evaluate_script_with_callback(&script, move |result| {
@@ -905,14 +933,31 @@ mod tests {
         let page = address(dir.join("site/index.html").to_str().unwrap()).unwrap();
         assert!(page.starts_with("herdr-file://localhost/"), "{page}");
         assert_eq!(address(&format!("file://{}", dir.join("site/index.html").display())).unwrap(), page);
+        // Typed herdr-file: addresses are checked like paths: a folder isn't a page.
+        assert_eq!(address(&page).unwrap(), page);
+        assert!(address(&page.replace("index.html", "")).is_err());
+        assert!(address("herdr-file://localhost/no/such/file.html").is_err());
+        let get = |uri: &str, origin: Option<&str>| {
+            let mut r = wry::http::Request::builder().uri(uri);
+            if let Some(o) = origin {
+                r = r.header("Origin", o);
+            }
+            r.body(Vec::new()).unwrap()
+        };
         allow_folder("b", &page);
         let css = page.replace("index.html", "style.css");
-        let r = serve_local("b", &css);
+        let r = serve_local("b", &get(&css, None));
         assert_eq!(r.status(), 200);
         assert_eq!(r.headers()["Content-Type"], "text/css; charset=utf-8");
-        assert_eq!(serve_local("b", &page.replace("site/index.html", "secret.txt")).status(), 403);
-        assert_eq!(serve_local("b", &page.replace("index.html", "../secret.txt")).status(), 403);
-        assert_eq!(serve_local("other", &css).status(), 403);
+        assert_eq!(r.headers()["Content-Security-Policy"], LOCAL_CSP);
+        assert_eq!(serve_local("b", &get(&css, Some("herdr-file://localhost"))).status(), 200);
+        assert_eq!(serve_local("b", &get(&css, Some("https://evil.example"))).status(), 403);
+        assert_eq!(serve_local("b", &get(&page.replace("site/index.html", "secret.txt"), None)).status(), 403);
+        assert_eq!(serve_local("b", &get(&page.replace("index.html", "../secret.txt"), None)).status(), 403);
+        assert_eq!(serve_local("other", &get(&css, None)).status(), 403);
+        // Navigating away from the local file takes the folder back.
+        allow_folder("b", "https://herdr.dev/");
+        assert_eq!(serve_local("b", &get(&css, None)).status(), 403);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
