@@ -601,6 +601,11 @@ impl Web {
         container::focused(Some(&id));
         Ok(())
     }
+
+    /// Takes the keyboard back from whichever page has it.
+    pub fn give_back(&self) {
+        container::give_back();
+    }
 }
 
 /// SPIKE (macOS): a plain NSView at a block's bounds, holding that block's page.

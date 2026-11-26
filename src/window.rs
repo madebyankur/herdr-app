@@ -3419,6 +3419,7 @@ impl AppWindow {
                 self.focused_pane = None;
                 self.agent = self.model.address_of(&p);
                 self.swapped.remove(&p);
+                self.hand_page_keyboard(&p);
             }
             "pane.go" => {
                 let dir = Self::arg(a, "direction").unwrap_or_default();
@@ -3894,12 +3895,23 @@ impl AppWindow {
             .or_else(|| self.neighbor(&from, dir, true));
         let Some(to) = to else { return };
         if self.focusable(&to) {
+            self.web.borrow().give_back();
             return self.focus_block(&to, window, cx);
         }
         self.focused_block = None;
         self.model.focus_pane(&to);
         self.focused_pane = None;
         self.sync(window, cx);
+        self.hand_page_keyboard(&to);
+    }
+
+    /// SPIKE: a web pane focused by a key or command gets the keyboard, as a
+    /// click gives it; any other pane takes it back from the page.
+    fn hand_page_keyboard(&self, pane: &str) {
+        let web = self.model.tab_of(pane).and_then(|t| t.root.find(pane)).is_some_and(|n| matches!(n.content(), Some(Content::Web { .. })));
+        if !web || self.overlays.iter().any(|o| o.kind.modal_keys()) || self.web.borrow().focus(Some(pane)).is_err() {
+            self.web.borrow().give_back();
+        }
     }
 
     /// Until the mod takes the keyboard, the window holds the keys.
