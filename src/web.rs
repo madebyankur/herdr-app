@@ -64,13 +64,6 @@ pub struct Web {
     last: Option<String>,
 }
 
-/// WebRTC reaches the network past the page's CSP: local pages go without it.
-const NO_RTC: &str = r#"if (location.protocol === "herdr-file:") {
-  for (const k of ["RTCPeerConnection", "webkitRTCPeerConnection", "RTCDataChannel", "RTCRtpSender", "RTCRtpReceiver", "RTCIceCandidate", "RTCSessionDescription"]) {
-    Object.defineProperty(window, k, { value: undefined, writable: false, configurable: false });
-  }
-}"#;
-
 const TITLE_REPORTER: &str = r#"(() => {
   let last = null;
   const send = () => { const t = document.title; if (t !== last) { last = t; window.ipc.postMessage(JSON.stringify({ title: t })); } };
@@ -438,7 +431,6 @@ impl Web {
             // The page reports its own title: on load, and whenever <title> changes
             // (WebKit's title callback misses some navigations).
             .with_initialization_script(TITLE_REPORTER)
-            .with_initialization_script_for_main_only(NO_RTC, false)
             .with_ipc_handler(move |req| on_ipc(&title_id, req.body()))
             .build_as_child(&container);
         match built {
@@ -676,7 +668,7 @@ mod container {
     use gpui::{Bounds, Pixels, Window};
     use objc2::{MainThreadMarker, Message};
     use objc2::rc::Retained;
-    use objc2::runtime::AnyObject;
+    use objc2::runtime::{AnyObject, NSObjectProtocol};
     use objc2_app_kit::{NSAlert, NSAlertFirstButtonReturn, NSModalResponse, NSAutoresizingMaskOptions, NSBitmapImageFileType, NSBitmapImageRep, NSEvent, NSEventMask, NSEventType, NSImage, NSView};
     use objc2_foundation::{NSDictionary, NSError, NSString};
     use objc2_web_kit::{WKContentRuleList, WKContentRuleListStore, WKSnapshotConfiguration, WKWebView};
@@ -711,6 +703,20 @@ mod container {
       { "trigger": { "url-filter": ".*", "if-top-url": ["^herdr-file:"] }, "action": { "type": "block" } },
       { "trigger": { "url-filter": "^herdr-file:" }, "action": { "type": "ignore-previous-rules" } }
     ]"#;
+
+    /// WebRTC reaches the network past a local page's CSP and rules, and from
+    /// any frame it opens: no page in Herdr gets it (no calls or screen share).
+    fn no_webrtc(page: &WKWebView) {
+        // SAFETY: the page's own preferences, on the main thread.
+        let prefs = unsafe { page.configuration().preferences() };
+        // WebKit's private switch (WKPreferencesPrivate.h); checked, not assumed.
+        if prefs.respondsToSelector(objc2::sel!(_setPeerConnectionEnabled:)) {
+            // SAFETY: the selector exists and takes a BOOL.
+            let _: () = unsafe { objc2::msg_send![&*prefs, _setPeerConnectionEnabled: false] };
+        } else {
+            tracing::warn!("this WebKit can't turn WebRTC off: local pages could reach the network through it");
+        }
+    }
 
     fn add_rules(page: &WKWebView, rules: &WKContentRuleList) {
         // SAFETY: the page's own configuration, on the main thread.
@@ -864,6 +870,7 @@ mod container {
         /// The page follows the box's size from now on.
         pub fn fill_with(&self, page: &wry::WebView, id: &str) {
             let wk: Retained<WKWebView> = Retained::into_super(page.webview());
+            no_webrtc(&wk);
             guard_local(&wk);
             PAGES.with_borrow_mut(|p| p.insert(id.to_owned(), wk));
             page.webview().setAutoresizingMask(
