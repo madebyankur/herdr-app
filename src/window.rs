@@ -1936,6 +1936,10 @@ impl AppWindow {
         let focused_pane = if block.is_some() { None } else { m.focused_pane() };
         let mut agents = Vec::new();
         let mut panes = Vec::new();
+        let mut web_alive: HashSet<String> = self.chrome.walk().into_iter()
+            .filter(|n| matches!(n.content(), Some(Content::Web { .. })))
+            .map(|n| n.id.clone())
+            .collect();
         for pr in &m.spaces {
             for (ci, ctx) in pr.tabs.iter().enumerate() {
                 for p in ctx.root.panes() {
@@ -1944,6 +1948,13 @@ impl AppWindow {
                     // A mod pane: what it shows, no terminal.
                     if let Some(Content::Mod { name, .. }) = p.content() {
                         panes.push(json!({ "pane": p.id, "terminal": null, "mod": name, "tab": ctx.id, "title": name, "name": p.title, "focused": focused, "zoomed": zoomed, "movable": self.pane_movable(&p.id) }));
+                        continue;
+                    }
+                    if let Some(Content::Web { web }) = p.content() {
+                        let page = mods::shared("web").and_then(|w| w.get(&p.id).cloned()).unwrap_or_default();
+                        let title = page.get("title").and_then(Value::as_str).filter(|t| !t.is_empty()).unwrap_or(web);
+                        panes.push(json!({ "pane": p.id, "terminal": null, "web": page.get("url").cloned().unwrap_or(json!(web)), "tab": ctx.id, "title": title, "name": p.title, "focused": focused, "zoomed": zoomed, "movable": self.pane_movable(&p.id) }));
+                        web_alive.insert(p.id.clone());
                         continue;
                     }
                     let Some(addr) = p.terminal() else { continue };
@@ -1988,6 +1999,7 @@ impl AppWindow {
         changed |= mods::publish_spaces(Value::Array(spaces));
         changed |= mods::publish_agents(Value::Array(agents));
         changed |= mods::publish_panes(Value::Array(panes));
+        self.web.borrow_mut().retain(&web_alive);
         changed |= mods::publish_focused(focused.unwrap_or(Value::Null));
         changed |= mods::publish_floats(self.float_placements());
         changed |= mods::publish_layout(&self.chrome);
@@ -2815,6 +2827,33 @@ impl AppWindow {
         Ok(json!({ "pane": new }))
     }
 
+    /// SPIKE: a web page as a pane beside the target, saved and closed with its tab.
+    fn split_web(&mut self, pane: Option<String>, axis: Axis, url: String) -> Result<Value, String> {
+        let target = pane.or_else(|| self.model.focused_pane()).ok_or("no pane to split")?;
+        if self.model.tab_of(&target).is_none() {
+            return Err(format!("no pane {target:?}"));
+        }
+        let url = crate::web::address(&url)?;
+        let machine = self.model.space_of(&target).and_then(|s| s.machine.clone());
+        self.require_document(machine.as_deref())?;
+        let new = self.model.fresh_id_on("p", machine.as_deref());
+        self.model.split_with(&target, axis, Node::block(new.clone(), Content::Web { web: url }));
+        Ok(json!({ "pane": new }))
+    }
+
+    /// SPIKE: a click on a web page focuses its pane, as a click on a terminal does.
+    fn web_clicked(&mut self, id: String, cx: &mut Context<Self>) {
+        if self.focused_pane.as_deref() == Some(id.as_str()) || self.model.tab_of(&id).is_none() {
+            return;
+        }
+        self.model.focus_pane(&id);
+        self.focused_pane = Some(id);
+        self.synced_model_pane = self.model.focused_pane();
+        self.publish(cx);
+        self.save();
+        cx.notify();
+    }
+
     /// Ask only whether a missing terminal is closed. Core owns restarting it.
     fn check_closed(&mut self, missing: Vec<(String, String)>, window: &mut Window, cx: &mut Context<Self>) {
         self.checking_closed = true;
@@ -3331,9 +3370,10 @@ impl AppWindow {
                     Some("down") => Axis::Column,
                     other => return self.fail(format!("pane.split direction is \"right\" or \"down\", not {other:?}")),
                 };
-                let r = match Self::owned(a, "mod") {
-                    Some(name) => self.split_mod(Self::owned(a, "pane"), axis, name, a.get("props").cloned().unwrap_or(Value::Null)),
-                    None => self.split(Self::owned(a, "pane"), axis, Self::argv(a), None, window),
+                let r = match (Self::owned(a, "mod"), Self::owned(a, "web")) {
+                    (Some(name), _) => self.split_mod(Self::owned(a, "pane"), axis, name, a.get("props").cloned().unwrap_or(Value::Null)),
+                    (None, Some(url)) => self.split_web(Self::owned(a, "pane"), axis, url),
+                    (None, None) => self.split(Self::owned(a, "pane"), axis, Self::argv(a), None, window),
                 };
                 self.answer(r);
             }
@@ -3635,7 +3675,7 @@ impl AppWindow {
                 }
                 Err(e) => return self.fail(format!("layout: {e}")),
             },
-            "web.navigate" | "web.back" | "web.forward" | "web.reload" | "web.devtools" | "web.stop" | "web.design" => {
+            "web.navigate" | "web.back" | "web.forward" | "web.reload" | "web.devtools" | "web.stop" | "web.design" | "web.forget" => {
                 let r = self.web.borrow().command(name, Self::arg(a, "id"), Self::arg(a, "url"));
                 if let Err(e) = r {
                     return self.fail(e);
@@ -4210,6 +4250,11 @@ impl AppWindow {
             Request::SetWindowTitle(title) => window.set_window_title(title.as_deref().unwrap_or("Herdr")),
             Request::SetBadge(text) => crate::badge::set(text.as_deref()),
             Request::Refresh => self.refresh_mods(cx),
+            Request::WebClicked(id) => self.web_clicked(id, cx),
+            Request::WebPage => {
+                self.publish(cx);
+                cx.notify();
+            }
             Request::Control { cmd, reply } => {
                 // A page answers these later: the reply goes with the command.
                 if let Some(name) = cmd.get("do").and_then(Value::as_str).filter(|n| crate::web::AGENT_COMMANDS.contains(n)) {
@@ -4721,9 +4766,13 @@ impl AppWindow {
             Content::Mod { .. } => self.render_slot(&n.id, cx),
             Content::Web { web: url } => {
                 // The page is a native view over this spot: paint only says where.
+                let shot = self.web.borrow().shot(&n.id);
                 let (web, id, url) = (self.web.clone(), n.id.clone(), url.clone());
-                canvas(|_, _, _| (), move |b, _, window, _| web.borrow_mut().place(&id, &url, b, window))
+                div()
                     .size_full()
+                    .relative()
+                    .child(canvas(|_, _, _| (), move |b, _, window, _| web.borrow_mut().place(&id, &url, b, window)).size_full())
+                    .when_some(shot, |d, shot| d.child(img(shot).absolute().inset_0().size_full()))
                     .into_any_element()
             }
             Content::Agent { .. } => match self.shown_agent() {

@@ -443,6 +443,10 @@ pub enum Request {
     /// The app icon's badge (the Dock on macOS); `None` clears it.
     SetBadge(Option<String>),
     Refresh,
+    /// SPIKE: a web page was clicked (its block or pane id).
+    WebClicked(String),
+    /// SPIKE: a web page changed: its title or url (web panes show them), or its picture.
+    WebPage,
     /// From `herdr-app do` / `herdr-app status` (control.rs); answer on `reply`.
     Control { cmd: Value, reply: std::sync::mpsc::Sender<Value> },
 }

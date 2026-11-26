@@ -676,18 +676,25 @@ The main ones:
   programs such as yazi; partial images and scrolling follow the placeholder cells.
 - Agents: `agent.next`, `agent.prev`, `agent.focus {terminal}`.
 - Web (spike, macOS): a block with `{ "web": "<url>" }` shows a native web page
-  there. `web.navigate {url, id?}`, `web.back {id?}`, `web.forward {id?}`,
-  `web.reload {id?}`, `web.stop {id?}`, `web.devtools {id?}`, `web.focus {id?}`,
-  `web.design {id?}` (pick an element; its context lands in shared `"web"[id].grab`)
-  (`id`: the block; default the last one shown). Shared `"web"` holds each block's
-  `{url, title, loading, focused}` for a toolbar mod. While a page has the keyboard,
-  keys bound in `global` or the shown `layout:` section still go to Herdr.
+  there, and `pane.split {direction, web}` opens one as a pane beside a terminal
+  (saved and closed with its tab; a click on it focuses it). A url can be a local
+  file (`/…`, `~/…`, `file://…`): it loads as `herdr-file:` and reads only files in
+  its own folder. Sign-ins persist in Herdr's own store, apart from Safari's.
+  Opening a page never takes the keyboard. `web.navigate {url, id?}`, `web.back {id?}`,
+  `web.forward {id?}`, `web.reload {id?}`, `web.stop {id?}`, `web.devtools {id?}`,
+  `web.focus {id?}`, `web.design {id?}` (pick an element; its context lands in shared
+  `"web"[id].grab`) (`id`: the block or pane; default the last one shown). Shared
+  `"web"` holds each page's `{url, title, loading, focused}` for a toolbar mod.
+  While a page has the keyboard, keys bound in `global` or the shown `layout:`
+  section still go to Herdr. Under a dialog or popup a page shows a picture of itself.
   Agents drive pages with `herdr-app do`, and the page answers: `web.read {mode?, id?}`
   (text, or `"tree"`: links, buttons, fields and headings, each with a `ref`),
   `web.click {ref | selector}`, `web.type {text, ref | selector, submit?, clear?}`,
   `web.key {key}`, `web.scroll {by? | to? | ref | selector}`, `web.screenshot {path?}`
-  (prints the PNG's path). Every page is open to them, signed-in sites included;
-  the events they send are synthetic, so a site may ignore some.
+  (prints the PNG's path). The first of these on a site asks the person in a
+  native sheet; the command waits for their answer and fails if they decline.
+  Their yes lasts for that page and site until Herdr quits; `web.forget {id?}`
+  takes it back. The events agents send are synthetic, so a site may ignore some.
 - Layout: `layout.switch {name?}`, `layout.toggle {id}`, `layout.show {id}`, `layout.hide {id}`,
   `layout.resize {id, px | weight}`, `layout.select {stack, child}`, `layout.set {layout}`
   (personal tree edits; on shipped layouts only click/look fields change),
