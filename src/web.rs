@@ -404,7 +404,6 @@ impl Web {
         allow_folder(id, url);
         let built = WebViewBuilder::new()
             .with_id(id)
-            .with_url(url)
             .with_bounds(rect(size))
             .with_devtools(true)
             // Pages take the keyboard only when clicked (or by web.focus / design mode).
@@ -436,6 +435,10 @@ impl Web {
         match built {
             Ok(view) => {
                 container.fill_with(&view, id);
+                // Only now: fill_with turned WebRTC off, so no page ever starts with it.
+                if let Err(e) = view.load_url(url) {
+                    tracing::warn!("web block {id}: {e}");
+                }
                 publish(id, "url", json!(url));
                 self.views.insert(
                     id.to_owned(),
