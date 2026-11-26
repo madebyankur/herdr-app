@@ -143,7 +143,13 @@ fn allow_folder(id: &str, url: &str) {
 
 /// Local pages load only their own folder's files: no network, so what they
 /// read stays on the machine.
-const LOCAL_CSP: &str = "default-src herdr-file: data: blob: 'unsafe-inline' 'unsafe-eval'";
+const LOCAL_CSP: &str = "default-src herdr-file: data: blob: 'unsafe-inline' 'unsafe-eval'; form-action 'none'; base-uri 'none'";
+
+/// A local page stays local: it can't carry what it read off to a web address
+/// by navigating there (Herdr's own web.navigate takes the folder back first).
+fn may_navigate(id: &str, url: &str) -> bool {
+    url.starts_with(LOCAL) || url.starts_with("about:") || ROOTS.lock().unwrap().as_ref().is_none_or(|r| !r.contains_key(id))
+}
 
 /// Answers a `herdr-file:` request from block `id`'s page.
 fn serve_local(id: &str, req: &wry::http::Request<Vec<u8>>) -> wry::http::Response<std::borrow::Cow<'static, [u8]>> {
@@ -205,6 +211,8 @@ pub fn address(text: &str) -> Result<String, String> {
         if !path.is_file() {
             return Err(format!("no file {}", path.display()));
         }
+        // The real path: the consent check compares it with the page's folder.
+        let path = path.canonicalize().map_err(|e| format!("{}: {e}", path.display()))?;
         let file = url::Url::from_file_path(&path).map_err(|_| format!("not a file path: {}", path.display()))?;
         return Ok(format!("{LOCAL}localhost{}", file.path()));
     }
@@ -392,7 +400,7 @@ impl Web {
             return;
         };
         let size = Bounds { origin: gpui::Point::default(), size: b.size };
-        let (load_id, title_id) = (id.to_owned(), id.to_owned());
+        let (load_id, title_id, nav_id) = (id.to_owned(), id.to_owned(), id.to_owned());
         allow_folder(id, url);
         let built = WebViewBuilder::new()
             .with_id(id)
@@ -406,7 +414,8 @@ impl Web {
             .with_custom_protocol("herdr-file".into(), |id, req| serve_local(id, &req))
             // Navigations include iframes (ads, embeds): the address comes only
             // from main-frame page loads below.
-            .with_navigation_handler(|_| true)
+            .with_navigation_handler(move |u| may_navigate(&nav_id, &u))
+            .with_new_window_req_handler(|_, _| wry::NewWindowResponse::Deny)
             .with_on_page_load_handler(move |ev, u| {
                 // Left its local file: the folder isn't the page's to read any more.
                 if !u.starts_with(LOCAL) {
@@ -604,7 +613,18 @@ impl Web {
         }
         let a = if a.is_object() { a } else { json!({}) };
         // The page may navigate before the script runs: it checks it's still on the allowed site.
-        let still = if url.starts_with(LOCAL) { "location.protocol === \"herdr-file:\"".to_owned() } else { format!("location.origin === {}", json!(key.1)) };
+        let still = if url.starts_with(LOCAL) {
+            let Some(root) = ROOTS.lock().unwrap().as_ref().and_then(|r| r.get(&id).cloned()) else {
+                return fail(&reply, "the page changed: web.read again".into());
+            };
+            // In the allowed folder (or the one allowed file), not just any local page.
+            format!(
+                "location.protocol === \"herdr-file:\" && ((p, r) => p === r || p.startsWith(r + \"/\"))(decodeURIComponent(location.pathname), {})",
+                json!(root.to_string_lossy())
+            )
+        } else {
+            format!("location.origin === {}", json!(key.1))
+        };
         let script = format!("({still}) ? ({AGENT_SCRIPT})({}, {}) : JSON.stringify({{ error: \"the page changed: web.read again\" }})", json!(op), a);
         // wry wants a callback it can call more than once; it calls it once.
         let reply = std::sync::Mutex::new(Some(reply));
@@ -955,8 +975,13 @@ mod tests {
         assert_eq!(serve_local("b", &get(&page.replace("site/index.html", "secret.txt"), None)).status(), 403);
         assert_eq!(serve_local("b", &get(&page.replace("index.html", "../secret.txt"), None)).status(), 403);
         assert_eq!(serve_local("other", &get(&css, None)).status(), 403);
+        // The page itself can't leave for the web; Herdr's web.navigate can.
+        assert!(may_navigate("b", &css));
+        assert!(!may_navigate("b", "https://evil.example/?d=secret"));
+        assert!(may_navigate("other", "https://herdr.dev/"));
         // Navigating away from the local file takes the folder back.
         allow_folder("b", "https://herdr.dev/");
+        assert!(may_navigate("b", "https://herdr.dev/"));
         assert_eq!(serve_local("b", &get(&css, None)).status(), 403);
         std::fs::remove_dir_all(&dir).unwrap();
     }
