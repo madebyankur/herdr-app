@@ -64,6 +64,13 @@ pub struct Web {
     last: Option<String>,
 }
 
+/// WebRTC reaches the network past the page's CSP: local pages go without it.
+const NO_RTC: &str = r#"if (location.protocol === "herdr-file:") {
+  for (const k of ["RTCPeerConnection", "webkitRTCPeerConnection", "RTCDataChannel", "RTCRtpSender", "RTCRtpReceiver", "RTCIceCandidate", "RTCSessionDescription"]) {
+    Object.defineProperty(window, k, { value: undefined, writable: false, configurable: false });
+  }
+}"#;
+
 const TITLE_REPORTER: &str = r#"(() => {
   let last = null;
   const send = () => { const t = document.title; if (t !== last) { last = t; window.ipc.postMessage(JSON.stringify({ title: t })); } };
@@ -148,7 +155,7 @@ const LOCAL_CSP: &str = "default-src herdr-file: data: blob: 'unsafe-inline' 'un
 /// A local page stays local: it can't carry what it read off to a web address
 /// by navigating there (Herdr's own web.navigate takes the folder back first).
 fn may_navigate(id: &str, url: &str) -> bool {
-    url.starts_with(LOCAL) || url.starts_with("about:") || ROOTS.lock().unwrap().as_ref().is_none_or(|r| !r.contains_key(id))
+    url.starts_with(LOCAL) || ROOTS.lock().unwrap().as_ref().is_none_or(|r| !r.contains_key(id))
 }
 
 /// Answers a `herdr-file:` request from block `id`'s page.
@@ -431,6 +438,7 @@ impl Web {
             // The page reports its own title: on load, and whenever <title> changes
             // (WebKit's title callback misses some navigations).
             .with_initialization_script(TITLE_REPORTER)
+            .with_initialization_script_for_main_only(NO_RTC, false)
             .with_ipc_handler(move |req| on_ipc(&title_id, req.body()))
             .build_as_child(&container);
         match built {
@@ -671,7 +679,7 @@ mod container {
     use objc2::runtime::AnyObject;
     use objc2_app_kit::{NSAlert, NSAlertFirstButtonReturn, NSModalResponse, NSAutoresizingMaskOptions, NSBitmapImageFileType, NSBitmapImageRep, NSEvent, NSEventMask, NSEventType, NSImage, NSView};
     use objc2_foundation::{NSDictionary, NSError, NSString};
-    use objc2_web_kit::{WKSnapshotConfiguration, WKWebView};
+    use objc2_web_kit::{WKContentRuleList, WKContentRuleListStore, WKSnapshotConfiguration, WKWebView};
     use objc2_core_foundation::{CGPoint, CGRect, CGSize};
     use raw_window_handle::{
         AppKitWindowHandle, HandleError, HasWindowHandle, RawWindowHandle, WindowHandle,
@@ -691,6 +699,54 @@ mod container {
         static MONITOR: Cell<bool> = const { Cell::new(false) };
         /// Each block's WKWebView, for snapshots.
         static PAGES: RefCell<std::collections::HashMap<String, Retained<WKWebView>>> = RefCell::new(Default::default());
+        /// WebKit's own block on everything but `herdr-file:` under a local page,
+        /// once compiled (`None` while it compiles, or if it failed).
+        static RULES: RefCell<Option<Retained<WKContentRuleList>>> = const { RefCell::new(None) };
+        static COMPILING: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// Under a `herdr-file:` page, every load but `herdr-file:` is blocked,
+    /// below the CSP (which WebRTC and other APIs get around).
+    const LOCAL_RULES: &str = r#"[
+      { "trigger": { "url-filter": ".*", "if-top-url": ["^herdr-file:"] }, "action": { "type": "block" } },
+      { "trigger": { "url-filter": "^herdr-file:" }, "action": { "type": "ignore-previous-rules" } }
+    ]"#;
+
+    fn add_rules(page: &WKWebView, rules: &WKContentRuleList) {
+        // SAFETY: the page's own configuration, on the main thread.
+        unsafe { page.configuration().userContentController().addContentRuleList(rules) };
+    }
+
+    /// Adds the rules to `page`; the first page compiles them (async), then
+    /// every page placed so far gets them.
+    fn guard_local(page: &WKWebView) {
+        if let Some(rules) = RULES.with_borrow(|r| r.clone()) {
+            return add_rules(page, &rules);
+        }
+        if COMPILING.replace(true) {
+            return;
+        }
+        let done = block2::RcBlock::new(|list: *mut WKContentRuleList, err: *mut NSError| {
+            // SAFETY: WebKit hands a live list (or null) on the main thread.
+            let Some(list) = (unsafe { Retained::retain(list) }) else {
+                // SAFETY: a live NSError when the list is null.
+                let why = unsafe { err.as_ref() }.map(|e| e.localizedDescription().to_string()).unwrap_or_default();
+                tracing::warn!("local page rules didn't compile: {why}");
+                return;
+            };
+            PAGES.with_borrow(|p| p.values().for_each(|page| add_rules(page, &list)));
+            RULES.with_borrow_mut(|r| *r = Some(list));
+        });
+        let Some(mtm) = MainThreadMarker::new() else { return };
+        // SAFETY: WebKit's default store, on the main thread.
+        unsafe {
+            let Some(store) = WKContentRuleListStore::defaultStore(mtm) else { return };
+            store.compileContentRuleListForIdentifier_encodedContentRuleList_completionHandler(
+                Some(&NSString::from_str("herdr-local-pages")),
+                Some(&NSString::from_str(LOCAL_RULES)),
+                Some(&done),
+            );
+        }
     }
 
     /// A PNG of part of a page (`rect`: CSS px from its top-left), handed to `done`.
@@ -808,6 +864,7 @@ mod container {
         /// The page follows the box's size from now on.
         pub fn fill_with(&self, page: &wry::WebView, id: &str) {
             let wk: Retained<WKWebView> = Retained::into_super(page.webview());
+            guard_local(&wk);
             PAGES.with_borrow_mut(|p| p.insert(id.to_owned(), wk));
             page.webview().setAutoresizingMask(
                 NSAutoresizingMaskOptions::ViewWidthSizable
