@@ -52,7 +52,7 @@
     };
     const name = (el) => clip(
       el.getAttribute("aria-label") || el.getAttribute("alt") || el.getAttribute("title") ||
-      (el.labels && el.labels[0] && el.labels[0].innerText) || el.getAttribute("placeholder") ||
+      el.labels?.[0]?.innerText || el.getAttribute("placeholder") ||
       el.innerText || el.value || "", 120);
     const describe = (el) => ({ ref: refOf(el), role: role(el) ?? el.tagName.toLowerCase(), name: name(el) });
     const page = () => ({ url: location.href, title: document.title });
@@ -109,7 +109,8 @@
           el.dispatchEvent(new Event("input", { bubbles: true }));
           el.dispatchEvent(new Event("change", { bubbles: true }));
         } else {
-          throw new Error(`${describe(el).role} ${describe(el).ref} doesn't take text`);
+          const d = describe(el);
+          throw new Error(`${d.role} ${d.ref} doesn't take text`);
         }
         if (args.submit) {
           const key = { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, cancelable: true };

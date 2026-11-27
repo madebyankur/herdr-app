@@ -12,13 +12,6 @@ import { pickTarget, grabLabel, formatGrab } from "./grab.js";
 
 const ICON = (name) => svg(`mods/web-toolbar/${name}.svg`);
 
-// What you typed in the address bar -> what the page loads.
-// The app adds https:// to anything without a scheme, so "github.com" works as is.
-export function toUrl(text) {
-  // TODO(you): decide when typed text is a search instead of an address.
-  return text.trim();
-}
-
 export default class WebToolbar extends View {
   init(_props, cx) {
     this.id = props()?.web ?? "page";
@@ -32,7 +25,8 @@ export default class WebToolbar extends View {
     });
     this.input.on("blur", (_e, cx) => { this.editing = false; this.syncUrl(); cx.notify(); });
     this.input.on("submit", (_e, cx) => {
-      const url = toUrl(this.input.value());
+      // The app adds https:// to anything without a scheme.
+      const url = this.input.value().trim();
       if (url) run("web.navigate", { id: this.id, url });
       // Typing is done: the page gets the keyboard.
       run("web.focus", { id: this.id });

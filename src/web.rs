@@ -468,10 +468,10 @@ impl Web {
             if cover != e.covered {
                 e.covered = cover;
                 if cover {
-                    let id = id.clone();
-                    container::snapshot(&id.clone(), [0.0, 0.0, 1.0e7, 1.0e7], move |png| {
+                    let shot = id.clone();
+                    container::snapshot(id, [0.0, 0.0, 1.0e7, 1.0e7], move |png| {
                         let image = png.map(|png| std::sync::Arc::new(gpui::Image::from_bytes(gpui::ImageFormat::Png, png)));
-                        SHOTS.with_borrow_mut(|s| s.insert(id, image));
+                        SHOTS.with_borrow_mut(|s| s.insert(shot, image));
                         crate::mods::request(crate::mods::Request::WebPage);
                     });
                 } else {
@@ -532,7 +532,7 @@ impl Web {
             "web.reload" => v.reload(),
             "web.stop" => v.evaluate_script("window.stop()"),
             "web.design" => {
-                let id = id.map(str::to_owned).or_else(|| self.last.clone()).unwrap_or_default();
+                let id = self.id(id)?;
                 let on = !design_on(&id);
                 publish(&id, "design", json!(on));
                 if on {
@@ -565,11 +565,10 @@ impl Web {
             let _ = reply.send(json!({ "error": e }));
         };
         let id = args.get("id").and_then(Value::as_str);
-        let v = match self.view(id) {
-            Ok(v) => v,
+        let (v, id) = match self.view(id).and_then(|v| Ok((v, self.id(id)?))) {
+            Ok(found) => found,
             Err(e) => return fail(&reply, e),
         };
-        let id = id.map(str::to_owned).or_else(|| self.last.clone()).unwrap_or_default();
         // The page as it is now, not as last reported: consent is for this site.
         let url = v.url().unwrap_or_default();
         let key = (id.clone(), site_of(&id, &url));
@@ -647,7 +646,7 @@ impl Web {
 
     /// Gives the page the keyboard (a click on it does this too, natively).
     pub fn focus(&self, id: Option<&str>) -> Result<(), String> {
-        let id = id.map(str::to_owned).or_else(|| self.last.clone()).ok_or("no web block is shown")?;
+        let id = self.id(id)?;
         self.view(Some(&id))?.focus().map_err(|e| e.to_string())?;
         container::focused(Some(&id));
         Ok(())
